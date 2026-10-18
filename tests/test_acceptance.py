@@ -108,6 +108,29 @@ class AcceptanceTest(unittest.TestCase):
             [item for item in report.findings if item.status.value == "NEEDS_REVIEW"]
         )
 
+    def test_non_name_latin_in_ddu_ad_is_not_214_violation(self):
+        report = check_text(
+            "В ЖК Prime Park отделка White Box.",
+            Context(
+                legal_surface="advertisement",
+                object_type="residential_complex",
+                ddu_fundraising_ad=True,
+            ),
+        )
+        naming = [item for item in report.findings if item.code == "naming-214fz"]
+        self.assertEqual({item.text for item in naming}, {"Prime", "Park"})
+
+    def test_bare_name_is_checked_as_name(self):
+        report = check_text(
+            "Prime Park",
+            Context(
+                legal_surface="advertisement",
+                object_type="residential_complex",
+                ddu_fundraising_ad=True,
+            ),
+        )
+        self.assertTrue(report.has_likely_violation)
+
 
 if __name__ == "__main__":
     unittest.main()

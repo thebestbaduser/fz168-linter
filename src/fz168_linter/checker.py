@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -23,6 +24,15 @@ _LEGAL_214 = ("214-ФЗ п. 7 ст. 2 (введён ст. 4 168-ФЗ)",)
 _LEGAL_ZOZPP = ("ЗоЗПП ст. 10.1 п. 2 (введена ст. 1 168-ФЗ)", "53-ФЗ ч. 2 ст. 3")
 _LEGAL_AD = ("38-ФЗ ч. 11 ст. 5", "53-ФЗ ч. 2 ст. 3", "приказ ФАС № 1079/23")
 _LEGAL_TRADEMARK = ("ЗоЗПП ст. 10.1 п. 4", "53-ФЗ ч. 3 ст. 3")
+
+NAME_MARKER_RE = re.compile(
+    r"(?:ЖК|жилой\s+комплекс|жилого\s+комплекса|жилом\s+комплексе|комплекса?)\s*[«\"']?"
+    r"([A-Za-z][A-Za-z0-9]*(?:[ \t\-&+.][A-Za-z][A-Za-z0-9]*)*)",
+    re.IGNORECASE,
+)
+QUOTED_NAME_RE = re.compile(
+    r"[«\"']([A-Za-z][A-Za-z0-9]*(?:[ \t\-&+.][A-Za-z][A-Za-z0-9]*)*)[»\"']"
+)
 
 
 def _norm(value: str) -> str:
@@ -123,6 +133,38 @@ def _is_naming_context(context: Context) -> bool:
     return context.object_type == "residential_complex" and context.ddu_fundraising_ad is True
 
 
+def _looks_like_bare_name(text: str) -> bool:
+    """Короткая строка без знаков конца предложения — вероятно, само название."""
+
+    stripped = text.strip()
+    if not stripped or len(stripped) > 80:
+        return False
+    return not any(char in stripped for char in ".,;:!?")
+
+
+def _name_spans(masked: str) -> List[Tuple[int, int]]:
+    """Границы вероятного наименования объекта.
+
+    Название определяется после маркеров «ЖК», «жилой комплекс», в кавычках,
+    либо как вся короткая строка без знаков конца предложения. Это эвристика:
+    остальная латиница в рекламе получает статус рекламного текста, а не
+    нарушения 214-ФЗ.
+    """
+
+    spans: List[Tuple[int, int]] = []
+    for match in NAME_MARKER_RE.finditer(masked):
+        spans.append((match.start(1), match.end(1)))
+    for match in QUOTED_NAME_RE.finditer(masked):
+        spans.append((match.start(1), match.end(1)))
+    if not spans and _looks_like_bare_name(masked):
+        spans.append((0, len(masked)))
+    return spans
+
+
+def _in_spans(start: int, end: int, spans: Sequence[Tuple[int, int]]) -> bool:
+    return any(start >= left and end <= right for left, right in spans)
+
+
 def _exemption(context: Context) -> Optional[Tuple[Status, str]]:
     if not context.commissioned_before:
         return None
@@ -179,13 +221,14 @@ def check_text(
     text_map = TextMap(text)
     normalized_text = _norm(masked)
     findings: List[Finding] = []
+    name_spans = _name_spans(masked) if _is_naming_context(ctx) else []
 
     # 1. Смешанные алфавиты (гомоглифы).
     for start, end, token in iter_mixed(masked, text):
         chars = find_mixed_script(token)
         if not chars:
             continue
-        if _is_naming_context(ctx):
+        if _is_naming_context(ctx) and _in_spans(start, end, name_spans):
             status = Status.LIKELY_VIOLATION
             message = (
                 "Смешение алфавитов в наименовании объекта: требование «только с "
@@ -223,7 +266,7 @@ def check_text(
             continue
         rule = data_store["latin_index"].get(normalized)
 
-        if _is_naming_context(ctx):
+        if _is_naming_context(ctx) and _in_spans(start, end, name_spans):
             exemption = _exemption(ctx)
             if exemption is not None:
                 status, message = exemption

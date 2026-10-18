@@ -210,6 +210,8 @@ python -m unittest discover -s tests -v
 Правила добавляются в `src/fz168_linter/data/rules_re.json`. Требования к правилу:
 `id`, `reason`, `legal_basis`, `confidence`, `source`. Без источника правило не принимается.
 
+Готовые сценарии — в [examples/](examples/README.md).
+
 ## Лицензия
 
 MIT. См. [LICENSE](LICENSE).
