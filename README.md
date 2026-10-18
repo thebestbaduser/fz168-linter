@@ -59,20 +59,19 @@
 
 ## Установка
 
-```bash
-pip install fz168-linter            # ядро, без внешних зависимостей
-pip install "fz168-linter[morph]"   # + pymorphy3 для лемматизации
-pip install "fz168-linter[django]"  # + валидатор для моделей Django
-```
-
-Из исходников:
+Пакет пока не опубликован в PyPI — установка из исходников.
 
 ```bash
 git clone https://github.com/thebestbaduser/fz168-linter.git
 cd fz168-linter
-pip install -e ".[dev]"
+pip install -e .             # ядро, без внешних зависимостей
+pip install -e ".[morph]"    # + pymorphy3 для лемматизации
+pip install -e ".[django]"   # + валидатор для моделей Django
+pip install -e ".[dev]"      # тесты и линтер кода
 python -m unittest discover -s tests -v
 ```
+
+После установки доступна команда `fz168`.
 
 ## CLI
 
