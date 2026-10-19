@@ -24,7 +24,7 @@ class AcceptanceTest(unittest.TestCase):
     def test_registered_trademark_on_sign_is_exception(self):
         report = check_text(
             "Вывеска YourBrand",
-            Context(legal_surface="public_information"),
+            Context(legal_surface="public_information", trademark_status="registered"),
             extra_trademarks=["YourBrand"],
         )
         self.assertFalse(report.has_likely_violation)
@@ -81,7 +81,7 @@ class AcceptanceTest(unittest.TestCase):
         self.assertTrue(report.has_likely_violation)
 
     def test_html_technical_latin_is_silent(self):
-        html = '<button class="btn sale" data-id="42" aria-label="sale">Купить</button>'
+        html = '<button class="btn sale" data-id="42" aria-label="Купить">Купить</button>'
         report = check_text(
             html,
             Context(legal_surface="public_information", input_format="html"),

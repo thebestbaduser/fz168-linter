@@ -91,27 +91,38 @@ def main(argv: Optional[List[str]] = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         try:  # корректный UTF-8 при перенаправлении вывода в файл
             sys.stdout.reconfigure(encoding="utf-8")
-        except Exception:
+        except (OSError, ValueError):
             pass
 
-    args = build_parser().parse_args(argv)
-
-    if args.path == "-":
-        text = sys.stdin.read()
-        suffix = ""
-    else:
-        text = Path(args.path).read_text(encoding="utf-8")
-        suffix = Path(args.path).suffix.lower()
-
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    suffix = "" if args.path == "-" else Path(args.path).suffix.lower()
     input_format = args.input or SUFFIX_FORMATS.get(suffix, "text")
-    context = Context(
-        legal_surface=args.surface,
-        object_type=args.object_type,
-        ddu_fundraising_ad=True if args.ddu_ad else None,
-        commissioned_before=args.commissioned,
-        trademark_status=args.trademark,
-        input_format=input_format,
-    )
+    try:
+        context = Context(
+            legal_surface=args.surface,
+            object_type=args.object_type,
+            ddu_fundraising_ad=True if args.ddu_ad else None,
+            commissioned_before=args.commissioned,
+            trademark_status=args.trademark,
+            input_format=input_format,
+        )
+    except (TypeError, ValueError) as exc:
+        parser.error(str(exc))
+
+    try:
+        if args.path == "-":
+            if hasattr(sys.stdin, "buffer"):
+                text = sys.stdin.buffer.read().decode("utf-8")
+            else:
+                text = sys.stdin.read()
+        else:
+            text = Path(args.path).read_text(encoding="utf-8")
+    except UnicodeError:
+        parser.error(f"не удалось прочитать {args.path!r}: ожидается текст в UTF-8")
+    except OSError as exc:
+        parser.error(f"не удалось прочитать {args.path!r}: {exc}")
+
     report = check_text(text, context, extra_trademarks=args.trademark_word)
 
     if args.format == "json":

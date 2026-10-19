@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 from .detector import TextMap, iter_cyrillic, iter_latin, iter_mixed, mask_for
 from .homoglyphs import find_mixed_script
@@ -14,29 +15,44 @@ from .models import Context, Finding, Report, Status
 
 DATA_DIR = Path(__file__).with_name("data")
 
-# Буквальное прочтение ч. 3 ст. 5 168-ФЗ: «до дня вступления в силу
-# настоящего Федерального закона» = 24.06.2025 (день опубликования).
-LITERAL_EXEMPTION = "2025-06-24"
-# Распространённое в комментариях прочтение: объекты, введённые до 01.03.2026.
-COMMENTARY_EXEMPTION = "2026-03-01"
+# Общая дата и отдельная дата вступления статей 1 и 4 (ст. 5 168-ФЗ).
+GENERAL_EFFECTIVE_DATE = "2025-06-24"
+NAMING_EFFECTIVE_DATE = "2026-03-01"
 
 _LEGAL_214 = ("214-ФЗ п. 7 ст. 2 (введён ст. 4 168-ФЗ)",)
 _LEGAL_ZOZPP = ("ЗоЗПП ст. 10.1 п. 2 (введена ст. 1 168-ФЗ)", "53-ФЗ ч. 2 ст. 3")
 _LEGAL_AD = ("38-ФЗ ч. 11 ст. 5", "53-ФЗ ч. 2 ст. 3", "приказ ФАС № 1079/23")
 _LEGAL_TRADEMARK = ("ЗоЗПП ст. 10.1 п. 4", "53-ФЗ ч. 3 ст. 3")
 
+_NAME_WORD = r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9]*(?:[\-&+.][A-Za-zА-Яа-яЁё0-9]+)*"
 NAME_MARKER_RE = re.compile(
-    r"(?:ЖК|жилой\s+комплекс|жилого\s+комплекса|жилом\s+комплексе|комплекса?)\s*[«\"']?"
-    r"([A-Za-z][A-Za-z0-9]*(?:[ \t\-&+.][A-Za-z][A-Za-z0-9]*)*)",
+    r"(?<!\w)(?:ЖК|жилой\s+комплекс|жилого\s+комплекса|жилом\s+комплексе|"
+    r"жилой\s+дом|жилого\s+дома|жилом\s+доме)\s*[«\"']?"
+    r"(" + _NAME_WORD + r"(?:[ \t]+" + _NAME_WORD + r")*)",
     re.IGNORECASE,
 )
 QUOTED_NAME_RE = re.compile(
-    r"[«\"']([A-Za-z][A-Za-z0-9]*(?:[ \t\-&+.][A-Za-z][A-Za-z0-9]*)*)[»\"']"
+    r"[«\"'](" + _NAME_WORD + r"(?:[ \t]+" + _NAME_WORD + r")*)[»\"']"
 )
+_INLINE_TAG_RE = re.compile(r"</?(?:span|b|strong|i|em|small|u|abbr)(?:\s[^<>]*)?\s*>", re.I)
+_DUPLICATE_GAP_RE = re.compile(r"[ \t/|—–():\-]*")
 
 
 def _norm(value: str) -> str:
-    return value.lower().replace("ё", "е").strip()
+    return " ".join(value.lower().replace("ё", "е").split())
+
+
+def _term_set(values: Optional[Sequence[str]], name: str) -> Set[str]:
+    if values is None:
+        return set()
+    if isinstance(values, (str, bytes)):
+        raise TypeError(f"{name} должен быть последовательностью строк, а не строкой")
+    result = set()
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} должен содержать непустые строки")
+        result.add(_norm(value))
+    return result
 
 
 def _has_latin(value: str) -> bool:
@@ -97,14 +113,75 @@ def _make(
     )
 
 
-def _has_russian_equivalent(rule: Optional[Dict[str, Any]], normalized_text: str) -> bool:
+def _phrase_pattern(value: str) -> str:
+    return r"[ \t]+".join(re.escape(word) for word in value.split())
+
+
+def _same_text_block(masked: str, original: str, start: int, end: int) -> bool:
+    for gap in re.finditer(r"[ \t]+", masked[start:end]):
+        source = original[start + gap.start() : start + gap.end()]
+        if not re.fullmatch(r"[ \t]*", _INLINE_TAG_RE.sub("", source)):
+            return False
+    return True
+
+
+def _has_russian_equivalent(
+    rule: Optional[Dict[str, Any]], masked: str, original: str, start: int, end: int
+) -> bool:
+    """Ищет полный перевод непосредственно около обозначения, в одном текстовом блоке.
+
+    Текст в другом предложении, блоке HTML или атрибуте не считается дублем.
+    Проверка касается содержания; оформление линтер установить не может.
+    """
+
     if not rule:
         return False
+    window_start = max(0, start - 256)
+    nearby = masked[window_start : end + 256]
     for replacement in rule.get("replacements", []):
-        head = _norm(replacement.split()[0])
-        if len(head) >= 4 and head in normalized_text:
-            return True
+        pattern = r"(?<!\w)" + _phrase_pattern(replacement) + r"(?!\w)"
+        for match in re.finditer(pattern, nearby, re.IGNORECASE):
+            match_start, match_end = window_start + match.start(), window_start + match.end()
+            if not _same_text_block(masked, original, match_start, match_end):
+                continue
+            if match_end <= start:
+                left, right = match_end, start
+            elif match_start >= end:
+                left, right = end, match_start
+            else:
+                continue
+            if right - left > 256:
+                continue
+            gap = _INLINE_TAG_RE.sub("", original[left:right])
+            if _DUPLICATE_GAP_RE.fullmatch(gap):
+                return True
     return False
+
+
+def _iter_terms(
+    masked: str,
+    original: str,
+    variants: Iterable[str],
+    iterator: Callable[[str, str], Iterator[Tuple[int, int, str]]],
+) -> Iterator[Tuple[int, int, str]]:
+    """Сначала длинные словосочетания, затем оставшиеся отдельные слова."""
+
+    phrases = sorted({term for term in variants if " " in term}, key=lambda item: (-len(item), item))
+    spans: List[Tuple[int, int, str]] = []
+    for phrase in phrases:
+        pattern = r"(?<!\w)" + _phrase_pattern(phrase) + r"(?!\w)"
+        for match in re.finditer(pattern, masked, re.IGNORECASE):
+            if not _same_text_block(masked, original, match.start(), match.end()):
+                continue
+            if not any(match.start() < right and match.end() > left for left, right, _ in spans):
+                spans.append((match.start(), match.end(), original[match.start() : match.end()]))
+    phrase_spans = tuple(spans)
+    spans.extend(
+        (start, end, token)
+        for start, end, token in iterator(masked, original)
+        if not any(start < right and end > left for left, right, _ in phrase_spans)
+    )
+    yield from sorted(spans)
 
 
 _MORPH = None
@@ -130,16 +207,22 @@ def _lemma(word: str) -> Optional[str]:
 
 
 def _is_naming_context(context: Context) -> bool:
-    return context.object_type == "residential_complex" and context.ddu_fundraising_ad is True
+    return (
+        context.object_type in ("residential_complex", "building")
+        and context.ddu_fundraising_ad is True
+    )
 
 
 def _looks_like_bare_name(text: str) -> bool:
-    """Короткая строка без знаков конца предложения — вероятно, само название."""
+    """Короткое самостоятельное обозначение; русскую рекламную фразу не считаем именем."""
 
     stripped = text.strip()
     if not stripped or len(stripped) > 80:
         return False
-    return not any(char in stripped for char in ".,;:!?")
+    return (
+        not any(char in stripped for char in ".,;:!?\r\n")
+        and all(_has_latin(word) for word in stripped.split())
+    )
 
 
 def _name_spans(masked: str) -> List[Tuple[int, int]]:
@@ -152,10 +235,32 @@ def _name_spans(masked: str) -> List[Tuple[int, int]]:
     """
 
     spans: List[Tuple[int, int]] = []
-    for match in NAME_MARKER_RE.finditer(masked):
-        spans.append((match.start(1), match.end(1)))
-    for match in QUOTED_NAME_RE.finditer(masked):
-        spans.append((match.start(1), match.end(1)))
+    for marker in re.finditer(
+        r"(?<!\w)(?:ЖК|жилой\s+комплекс|жилого\s+комплекса|жилом\s+комплексе|"
+        r"жилой\s+дом|жилого\s+дома|жилом\s+доме)\s*", masked, re.IGNORECASE
+    ):
+        quoted = QUOTED_NAME_RE.match(masked, marker.end())
+        if quoted:
+            spans.append((quoted.start(1), quoted.end(1)))
+            continue
+        match = NAME_MARKER_RE.match(masked, marker.start())
+        if match:
+            # После латинского обозначения русский текст считается уже описанием.
+            name = match.group(1)
+            parts = list(re.finditer(_NAME_WORD, name))
+            last = match.start(1)
+            seen_latin = False
+            for part in parts:
+                latin = _has_latin(part.group())
+                if not latin and (seen_latin or part.group()[0].islower()):
+                    break
+                seen_latin = seen_latin or latin
+                last = match.start(1) + part.end()
+            spans.append((match.start(1), last))
+    quoted = QUOTED_NAME_RE.fullmatch(masked.strip())
+    if not spans and quoted:
+        offset = len(masked) - len(masked.lstrip())
+        spans.append((offset + quoted.start(1), offset + quoted.end(1)))
     if not spans and _looks_like_bare_name(masked):
         spans.append((0, len(masked)))
     return spans
@@ -168,18 +273,18 @@ def _in_spans(start: int, end: int, spans: Sequence[Tuple[int, int]]) -> bool:
 def _exemption(context: Context) -> Optional[Tuple[Status, str]]:
     if not context.commissioned_before:
         return None
-    if context.commissioned_before <= LITERAL_EXEMPTION:
+    if context.commissioned_before < GENERAL_EFFECTIVE_DATE:
         return (
             Status.NOT_APPLICABLE,
             "Объект введён до дня вступления закона в силу (ч. 3 ст. 5 168-ФЗ) — "
             "норма о кириллице к наименованию не применяется.",
         )
-    if context.commissioned_before < COMMENTARY_EXEMPTION:
+    if context.commissioned_before < NAMING_EFFECTIVE_DATE:
         return (
             Status.NEEDS_REVIEW,
-            "Дата ввода между 24.06.2025 и 01.03.2026. Буквальное прочтение ч. 3 ст. 5 "
-            "168-ФЗ исключения не даёт, распространённое толкование — даёт. Нужна "
-            "юридическая проверка.",
+            "Дата ввода между общей датой вступления закона в силу (24.06.2025) "
+            "и датой вступления нормы о наименовании (01.03.2026). Применимость "
+            "переходного исключения ч. 3 ст. 5 168-ФЗ требует юридической проверки.",
         )
     return None
 
@@ -198,6 +303,8 @@ def check_text(
     формат из контекста.
     """
 
+    if not isinstance(text, str):
+        raise TypeError("text должен быть строкой")
     if context is None:
         ctx = Context()
     elif isinstance(context, Context):
@@ -207,19 +314,16 @@ def check_text(
     else:
         raise TypeError("context должен быть Context, dict или None")
 
-    if input_format is not None:
-        data = ctx.to_dict()
-        data["input_format"] = input_format
-        ctx = Context.from_dict(data)
+    # Повторная валидация защищает и от изменённого после создания Context.
+    ctx = replace(ctx, **({"input_format": input_format} if input_format is not None else {}))
 
     data_store = load_data()
     tech: Set[str] = set(data_store["tech"])
-    tech.update(_norm(term) for term in (extra_whitelist or ()))
-    trademarks = {_norm(word) for word in (extra_trademarks or ())}
+    tech.update(_term_set(extra_whitelist, "extra_whitelist"))
+    trademarks = _term_set(extra_trademarks, "extra_trademarks")
 
     masked = mask_for(text, ctx.input_format)
     text_map = TextMap(text)
-    normalized_text = _norm(masked)
     findings: List[Finding] = []
     name_spans = _name_spans(masked) if _is_naming_context(ctx) else []
 
@@ -228,14 +332,22 @@ def check_text(
         chars = find_mixed_script(token)
         if not chars:
             continue
+        if _norm(token) in tech and not _in_spans(start, end, name_spans):
+            continue
         if _is_naming_context(ctx) and _in_spans(start, end, name_spans):
-            status = Status.LIKELY_VIOLATION
-            message = (
-                "Смешение алфавитов в наименовании объекта: требование «только с "
-                "использованием кириллицы» (214-ФЗ п. 7 ст. 2)."
-            )
+            exemption = _exemption(ctx)
+            if exemption is not None:
+                status, message = exemption
+            else:
+                status = Status.LIKELY_VIOLATION
+                message = (
+                    "Смешение алфавитов в наименовании объекта: требование «только с "
+                    "использованием кириллицы» (214-ФЗ п. 7 ст. 2)."
+                )
             basis = _LEGAL_214
-            confidence = "high"
+            confidence = "high" if ctx.commissioned_before and not exemption else "medium"
+            if ctx.commissioned_before is None:
+                message += " Дата ввода не задана: проверьте переходное исключение."
         else:
             status = Status.NEEDS_REVIEW
             message = (
@@ -260,10 +372,10 @@ def check_text(
         )
 
     # 2. Латиница.
-    for start, end, token in iter_latin(masked, text):
-        normalized = _norm(token)
-        if normalized in tech:
-            continue
+    for start, end, token in _iter_terms(
+        masked, text, set(data_store["latin_index"]) | tech | trademarks, iter_latin
+    ):
+        normalized = _norm(masked[start:end])
         rule = data_store["latin_index"].get(normalized)
 
         if _is_naming_context(ctx) and _in_spans(start, end, name_spans):
@@ -298,6 +410,8 @@ def check_text(
                     "дольщиков, должно быть только на кириллице (214-ФЗ п. 7 ст. 2)."
                 )
                 code = "naming-214fz"
+            if ctx.commissioned_before is None:
+                message += " Дата ввода не задана: проверьте переходное исключение."
             findings.append(
                 _make(
                     code,
@@ -308,22 +422,33 @@ def check_text(
                     token,
                     text_map,
                     legal_basis=_LEGAL_214,
-                    confidence="high",
+                    confidence="high" if ctx.commissioned_before else "medium",
                     rule_id=rule["id"] if rule else None,
                     replacements=tuple(rule.get("replacements", ())) if rule else (),
                 )
             )
             continue
 
-        if normalized in trademarks:
+        if normalized in tech:
+            continue
+
+        if (
+            normalized in trademarks
+            and ctx.legal_surface != "internal"
+            and ctx.trademark_status in ("registered", "unknown")
+        ):
+            registered = ctx.trademark_status == "registered"
             findings.append(
                 _make(
-                    "trademark-exception",
-                    Status.NO_ISSUE_FOUND,
-                    "Обозначение передано как зарегистрированный товарный знак: для вывесок "
+                    "trademark-exception" if registered else "trademark-needs-review",
+                    Status.NO_ISSUE_FOUND if registered else Status.NEEDS_REVIEW,
+                    ("Обозначение передано как зарегистрированный товарный знак: для вывесок "
                     "и публичной информации действует исключение (ст. 10.1 п. 4 ЗоЗПП, "
                     "ч. 3 ст. 3 53-ФЗ). Для наименования ЖК в рекламе ДДУ исключение не "
-                    "применяется.",
+                    "применяется.") if registered else (
+                        "Обозначение передано как товарный знак, но его статус неизвестен. "
+                        "Проверьте регистрацию или иное основание охраны; исключение не подтверждено."
+                    ),
                     start,
                     end,
                     token,
@@ -352,7 +477,7 @@ def check_text(
             continue
 
         if ctx.legal_surface == "advertisement":
-            if _has_russian_equivalent(rule, normalized_text):
+            if _has_russian_equivalent(rule, masked, text, start, end):
                 findings.append(
                     _make(
                         "russian-duplicate-present",
@@ -375,7 +500,9 @@ def check_text(
                         Status.NEEDS_REVIEW,
                         "Иностранный текст в рекламе без видимого русского дубля. Само по себе "
                         "нарушение ч. 11 ст. 5 38-ФЗ не образует основания для возбуждения "
-                        "дела (приказ ФАС № 1079/23): нужна оценка рекламы и состава.",
+                        "дела (приказ ФАС № 1079/23). Возможны другие основания, включая "
+                        "искажение смысла или отсутствие существенной информации: нужна "
+                        "оценка рекламы и состава.",
                         start,
                         end,
                         token,
@@ -389,7 +516,7 @@ def check_text(
             continue
 
         if ctx.legal_surface == "public_information":
-            if _has_russian_equivalent(rule, normalized_text):
+            if _has_russian_equivalent(rule, masked, text, start, end):
                 findings.append(
                     _make(
                         "russian-duplicate-present",
@@ -440,8 +567,10 @@ def check_text(
         )
 
     # 3. Кириллические заимствования.
-    for start, end, token in iter_cyrillic(masked, text):
-        normalized = _norm(token)
+    for start, end, token in _iter_terms(
+        masked, text, data_store["cyrillic_index"], iter_cyrillic
+    ):
+        normalized = _norm(masked[start:end])
         if normalized in data_store["approved"]:
             continue
         rule = data_store["cyrillic_index"].get(normalized)
@@ -450,6 +579,9 @@ def check_text(
             if lemma and _norm(lemma) != normalized:
                 rule = data_store["cyrillic_index"].get(_norm(lemma))
         if rule is None:
+            continue
+        # Словарные эвристики не превращают внутренние тексты в публичную информацию.
+        if ctx.legal_surface == "internal":
             continue
         findings.append(
             _make(
@@ -464,7 +596,10 @@ def check_text(
                 legal_basis=tuple(rule.get("legal_basis", ())),
                 confidence=rule.get("confidence", "medium"),
                 replacements=tuple(rule.get("replacements", ())),
-                details={"source": rule.get("source", "")},
+                details={
+                    "source": rule.get("source", ""),
+                    "dictionary_check": rule.get("dictionary_check", ""),
+                },
             )
         )
 

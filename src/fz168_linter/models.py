@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -47,13 +48,26 @@ class Context:
             raise ValueError(f"trademark_status: {self.trademark_status!r} не из {TRADEMARK_STATUSES}")
         if self.input_format not in INPUT_FORMATS:
             raise ValueError(f"input_format: {self.input_format!r} не из {INPUT_FORMATS}")
-        if isinstance(self.entity_roles, list):
-            object.__setattr__(self, "entity_roles", tuple(self.entity_roles))
+        if self.ddu_fundraising_ad is not None and type(self.ddu_fundraising_ad) is not bool:
+            raise ValueError("ddu_fundraising_ad должен быть bool или None")
+        if self.commissioned_before is not None:
+            try:
+                value = date.fromisoformat(self.commissioned_before)
+                if value.isoformat() != self.commissioned_before:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError("commissioned_before: нужна дата YYYY-MM-DD") from None
+        if not isinstance(self.entity_roles, (tuple, list)) or not all(
+            isinstance(role, str) and role for role in self.entity_roles
+        ):
+            raise ValueError("entity_roles должен быть списком или кортежем непустых строк")
+        self.entity_roles = tuple(self.entity_roles)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Context":
-        known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
-        return cls(**{k: v for k, v in (data or {}).items() if k in known})
+        if not isinstance(data, dict):
+            raise TypeError("context должен быть словарём")
+        return cls(**data)
 
     def to_dict(self) -> Dict[str, Any]:
         return {

@@ -18,7 +18,8 @@ class FZ168Validator:
     """
 
     def __init__(self, **context_kwargs: Any) -> None:
-        self.context_kwargs = context_kwargs
+        context = Context(**context_kwargs)
+        self.context_kwargs = {key: getattr(context, key) for key in context_kwargs}
 
     def __call__(self, value: Any) -> None:
         from django.core.exceptions import ValidationError
@@ -38,3 +39,8 @@ class FZ168Validator:
     def deconstruct(self):
         path = f"{self.__class__.__module__}.{self.__class__.__name__}"
         return path, [], dict(self.context_kwargs)
+
+    def __eq__(self, other: Any) -> bool:
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        return Context(**self.context_kwargs) == Context(**other.context_kwargs)
