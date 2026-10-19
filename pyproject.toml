@@ -13,8 +13,12 @@ authors = [{ name = "thebestbaduser" }]
 keywords = [
   "fz168",
   "russian-language",
+  "russian-text",
+  "anglicisms",
+  "text-checker",
   "linter",
   "compliance",
+  "cli",
   "django",
   "text-analysis",
   "llm",
