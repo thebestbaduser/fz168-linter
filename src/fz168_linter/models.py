@@ -20,7 +20,7 @@ class Status(str, Enum):
 SURFACES = ("advertisement", "public_information", "internal", "unknown")
 OBJECT_TYPES = ("residential_complex", "building", "other", "unknown")
 TRADEMARK_STATUSES = ("registered", "application", "none", "unknown")
-INPUT_FORMATS = ("text", "html", "jsx", "markdown")
+INPUT_FORMATS = ("text", "html", "jsx", "markdown", "django")
 
 
 @dataclass

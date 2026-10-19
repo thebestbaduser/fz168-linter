@@ -49,7 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     check = subparsers.add_parser("check", help="проверить файл или stdin")
     check.add_argument("path", help="путь к файлу или - для stdin")
-    check.add_argument("--input", choices=("text", "html", "jsx", "markdown"), default=None)
+    check.add_argument(
+        "--input", choices=("text", "html", "jsx", "markdown", "django"), default=None
+    )
     check.add_argument(
         "--surface",
         choices=("advertisement", "public_information", "internal", "unknown"),

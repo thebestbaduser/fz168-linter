@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fz168-linter"
-version = "0.2.0"
+version = "0.3.0"
 description = "Проверка русскоязычных текстов и интерфейсов на языковые риски по 168-ФЗ: латиница, смешанные алфавиты, равнозначное дублирование, заимствования"
 readme = "README.md"
 license = { text = "MIT" }

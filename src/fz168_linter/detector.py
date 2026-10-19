@@ -29,6 +29,7 @@ MD_LINK_TARGET_RE = re.compile(r"\]\([^)\n]*\)")
 TAG_NAME_RE = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9:._-]*)")
 ATTRIBUTE_NAME_RE = re.compile(r"[^\s=/>]+")
 ENTITY_RE = re.compile(r"&(?:#[xX][0-9A-Fa-f]+|#\d+|[A-Za-z][A-Za-z0-9]+);")
+DJANGO_TAG_RE = re.compile(r"\{%.*?%\}|\{\{.*?\}\}|\{#.*?#\}", re.DOTALL)
 TEXT_ATTRIBUTES = frozenset(("placeholder", "title", "alt", "aria-label", "aria-description"))
 TEXT_INPUT_TYPES = frozenset(
     ("text", "search", "email", "tel", "url", "button", "submit", "reset")
@@ -325,6 +326,20 @@ def mask_html(text: str, jsx: bool = False) -> str:
     return _mask_addresses(chars)
 
 
+def mask_django(text: str) -> str:
+    """Маскирует разметку и теги шаблона Django, сохраняя видимый текст.
+
+    Сначала скрываются HTML-теги и атрибуты, затем ``{% ... %}``, ``{{ ... }}``
+    и ``{# ... #}`` — в том числе внутри ранее оставленных видимых атрибутов.
+    Позиции остаются по исходной строке.
+    """
+
+    chars = list(mask_html(text))
+    for match in DJANGO_TAG_RE.finditer(text):
+        _mask(chars, match.start(), match.end())
+    return _mask_addresses(chars)
+
+
 def mask_for(text: str, input_format: str) -> str:
     if input_format == "html":
         return mask_html(text)
@@ -332,6 +347,8 @@ def mask_for(text: str, input_format: str) -> str:
         return mask_html(text, jsx=True)
     if input_format == "markdown":
         return mask_markdown(text)
+    if input_format == "django":
+        return mask_django(text)
     return _mask_addresses(list(text))
 
 

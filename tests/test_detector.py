@@ -124,6 +124,20 @@ class DetectorTest(unittest.TestCase):
         )
         self.assertEqual([item.text for item in report.findings], ["Sale"])
 
+    def test_django_template_tags_are_ignored_but_visible_text_is_checked(self):
+        text = (
+            '{% load static %}<div class="{% if x %}sale{% endif %}" '
+            'title="{% trans \'Sale\' %}">{{ brand.name }} '
+            "{# Sale #}<button>Sale</button>{% static 'catalog/app.js' %}</div>"
+        )
+        report = check_text(
+            text, Context(legal_surface="public_information", input_format="django")
+        )
+        self.assertEqual([item.text for item in report.findings], ["Sale"])
+        item = report.findings[0]
+        self.assertEqual(text[item.start : item.end], "Sale")
+        self.assertEqual(item.line, 1)
+
     def test_urls_and_email_are_ignored_in_every_input_format(self):
         visible = "https://example.com/sale www.example.com/buy sale@example.com Sale"
         for input_format in ("text", "markdown", "html", "jsx"):
