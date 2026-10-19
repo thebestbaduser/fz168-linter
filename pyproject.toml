@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fz168-linter"
-version = "0.1.0"
-description = "Предварительная проверка текстов и интерфейсов на языковые риски по 168-ФЗ: кириллица в названиях ЖК, равнозначное дублирование, заимствования"
+version = "0.1.1"
+description = "Проверка русскоязычных текстов и интерфейсов на языковые риски по 168-ФЗ: латиница, смешанные алфавиты, равнозначное дублирование, заимствования"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
@@ -15,8 +15,8 @@ keywords = [
   "russian-language",
   "linter",
   "compliance",
-  "real-estate",
   "django",
+  "text-analysis",
   "llm",
   "claude-skill",
   "cursor-rules",
