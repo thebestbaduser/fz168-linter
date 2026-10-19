@@ -33,6 +33,11 @@ TEXT_ATTRIBUTES = frozenset(("placeholder", "title", "alt", "aria-label", "aria-
 TEXT_INPUT_TYPES = frozenset(
     ("text", "search", "email", "tel", "url", "button", "submit", "reset")
 )
+JS_STATEMENT_RE = re.compile(
+    r"^[ \t]*(?:import|export|const|let|var|function|return|if|for|while|"
+    r"switch|try|catch|class|throw|await|async|declare|interface|type)\b"
+)
+JSX_START_RE = re.compile(r"<(?=[A-Za-z/])")
 
 
 class TextMap:
@@ -61,6 +66,28 @@ def _mask_addresses(chars: List[str]) -> str:
         for match in pattern.finditer(visible):
             _mask(chars, match.start(), match.end())
     return "".join(chars)
+
+
+def _mask_js_statements(chars: List[str], text: str) -> List[Tuple[int, int]]:
+    """Скрывает очевидные JS/TS-строки вне разметки.
+
+    Если в строке есть JSX, скрывается только префикс до первого тега:
+    видимый текст компонента продолжает проверяться. Это не парсер:
+    динамические выражения и вложенный JSX по-прежнему не вычисляются.
+    Возвращает скрытые диапазоны, чтобы разбор разметки их пропускал.
+    """
+
+    spans: List[Tuple[int, int]] = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith(("//", "/*", "*/")) or JS_STATEMENT_RE.match(line):
+            jsx_start = JSX_START_RE.search(line)
+            end = offset + (jsx_start.start() if jsx_start else len(line))
+            _mask(chars, offset, end)
+            spans.append((offset, end))
+        offset += len(line)
+    return spans
 
 
 def mask_markdown(text: str) -> str:
@@ -231,10 +258,18 @@ def mask_html(text: str, jsx: bool = False) -> str:
     """Оставляет текст и статические подписи HTML/JSX, сохраняя позиции."""
 
     chars = list(text)
+    js_spans = _mask_js_statements(chars, text) if jsx else []
     index = 0
     length = len(text)
 
+    def _in_js_span(position: int) -> bool:
+        return any(left <= position < right for left, right in js_spans)
+
     while index < length:
+        if jsx and _in_js_span(index):
+            index += 1
+            continue
+
         if text.startswith("<!--", index):
             end = text.find("-->", index + 4)
             end = length if end < 0 else end + 3

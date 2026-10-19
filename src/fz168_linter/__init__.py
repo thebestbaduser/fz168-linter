@@ -4,4 +4,4 @@ from .checker import check_text
 from .models import Context, Finding, Report, Status
 
 __all__ = ["check_text", "Context", "Finding", "Report", "Status", "__version__"]
-__version__ = "0.1.1"
+__version__ = "0.1.2"

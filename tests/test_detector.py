@@ -100,6 +100,30 @@ class DetectorTest(unittest.TestCase):
         )
         self.assertEqual(check_text(text, Context(input_format="jsx")).findings, [])
 
+    def test_jsx_component_code_outside_markup_is_ignored(self):
+        text = (
+            'import { useState } from "react";\n'
+            'const sale = "Sale";\n'
+            "export default function Block() {\n"
+            '  return <button className="sale">Купить</button>;\n'
+            "}\n"
+        )
+        report = check_text(
+            text, Context(legal_surface="public_information", input_format="jsx")
+        )
+        self.assertEqual(report.findings, [])
+
+    def test_jsx_visible_text_inside_component_is_still_checked(self):
+        text = (
+            "export default function Block() {\n"
+            '  return <button>{"Sale"}</button>;\n'
+            "}\n"
+        )
+        report = check_text(
+            text, Context(legal_surface="public_information", input_format="jsx")
+        )
+        self.assertEqual([item.text for item in report.findings], ["Sale"])
+
     def test_urls_and_email_are_ignored_in_every_input_format(self):
         visible = "https://example.com/sale www.example.com/buy sale@example.com Sale"
         for input_format in ("text", "markdown", "html", "jsx"):
