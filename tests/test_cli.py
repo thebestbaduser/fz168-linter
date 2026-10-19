@@ -84,6 +84,27 @@ class CLITest(unittest.TestCase):
                 self.assertEqual(stdout, "")
                 self.assertNotIn("Traceback", stderr)
 
+    def test_name_audit_command(self):
+        code, stdout, stderr = self.run_cli(
+            [
+                "name-audit",
+                "Test Object",
+                "--official-name",
+                "Тестовый Объект",
+                "--alias",
+                "Test Object",
+                "--object-type",
+                "residential_complex",
+                "--ddu-ad",
+                "--role",
+                "developer",
+            ]
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(stderr, "")
+        self.assertIn("name-alias-latin", stdout)
+        self.assertIn("Тестовый Объект", stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

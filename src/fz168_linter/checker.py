@@ -270,6 +270,30 @@ def _in_spans(start: int, end: int, spans: Sequence[Tuple[int, int]]) -> bool:
     return any(start >= left and end <= right for left, right in spans)
 
 
+def _clean_name(value: str) -> str:
+    text = re.sub(r"[«»\"'`]", "", value)
+    return re.sub(r"\s+", " ", text).strip(" .,:;!?—-")
+
+
+def _name_phrase_pattern(value: str) -> str:
+    words = []
+    for word in _clean_name(value).split():
+        escaped = re.escape(word)
+        escaped = escaped.replace("е", "[её]").replace("Е", "[ЕЁ]")
+        words.append(escaped)
+    return r"[ \t]+".join(words)
+
+
+def _name_spans_for(masked: str, value: str) -> List[Tuple[int, int]]:
+    pattern = _name_phrase_pattern(value)
+    if not pattern:
+        return []
+    return [
+        (match.start(), match.end())
+        for match in re.finditer(r"(?<!\w)" + pattern + r"(?!\w)", masked, re.IGNORECASE)
+    ]
+
+
 def _exemption(context: Context) -> Optional[Tuple[Status, str]]:
     if not context.commissioned_before:
         return None
@@ -296,6 +320,7 @@ def check_text(
     input_format: Optional[str] = None,
     extra_trademarks: Optional[Sequence[str]] = None,
     extra_whitelist: Optional[Sequence[str]] = None,
+    name_audit: bool = False,
 ) -> Report:
     """Проверяет текст и возвращает отчёт.
 
@@ -326,6 +351,13 @@ def check_text(
     text_map = TextMap(text)
     findings: List[Finding] = []
     name_spans = _name_spans(masked) if _is_naming_context(ctx) else []
+
+    official_name = (ctx.official_name or "").strip()
+    alias_values = [alias.strip() for alias in ctx.aliases]
+    alias_spans: List[Tuple[int, int]] = []
+    for alias in alias_values:
+        alias_spans.extend(_name_spans_for(masked, alias))
+    official_spans = _name_spans_for(masked, official_name) if official_name else []
 
     # 1. Смешанные алфавиты (гомоглифы).
     for start, end, token in iter_mixed(masked, text):
@@ -377,6 +409,10 @@ def check_text(
     ):
         normalized = _norm(masked[start:end])
         rule = data_store["latin_index"].get(normalized)
+
+        # Часть алиаса официального названия разбирается отдельной сверкой.
+        if _in_spans(start, end, alias_spans):
+            continue
 
         if _is_naming_context(ctx) and _in_spans(start, end, name_spans):
             exemption = _exemption(ctx)
@@ -600,6 +636,137 @@ def check_text(
                     "source": rule.get("source", ""),
                     "dictionary_check": rule.get("dictionary_check", ""),
                 },
+            )
+        )
+
+    findings.sort(key=lambda item: (item.start, item.code))
+
+    # 4. Сверка с официальным наименованием.
+    developer = "developer" in {role.lower() for role in ctx.entity_roles}
+    naming_context = _is_naming_context(ctx)
+    official_norm = _norm(_clean_name(official_name)) if official_name else ""
+    alias_seen: Set[str] = set()
+
+    for alias in alias_values:
+        alias_norm = _norm(_clean_name(alias))
+        if not alias_norm or alias_norm in alias_seen or alias_norm == official_norm:
+            continue
+        spans = _name_spans_for(masked, alias)
+        if not spans:
+            continue
+        alias_seen.add(alias_norm)
+        start, end = spans[0]
+        has_latin = any("a" <= char.lower() <= "z" for char in alias)
+        details = {
+            "official_name": official_name or None,
+            "alias": alias,
+            "name_source": ctx.name_source,
+        }
+        if naming_context and developer:
+            code = "name-alias-latin"
+            status = Status.LIKELY_VIOLATION
+            message = (
+                f"В рекламе ДДУ застройщика использован вариант «{alias}» при официальном "
+                f"наименовании «{official_name}». По 214-ФЗ требуется кириллица."
+            )
+        else:
+            code = "name-alias-mismatch"
+            status = Status.NEEDS_REVIEW
+            if official_name:
+                message = (
+                    f"В тексте встретился вариант «{alias}», официальное наименование — "
+                    f"«{official_name}». Это расхождение с эталоном, а не автоматическое нарушение."
+                )
+            else:
+                message = (
+                    f"В тексте встретился вариант «{alias}», эталонное наименование не задано. "
+                    "Укажите official_name из ЕИСЖС или проектной декларации."
+                )
+        findings.append(
+            _make(
+                code,
+                status,
+                message,
+                start,
+                end,
+                text[start:end],
+                text_map,
+                legal_basis=_LEGAL_214 if naming_context else (),
+                confidence="high" if naming_context and developer else "medium",
+                details=details,
+            )
+        )
+
+    official_has_latin = bool(official_name) and any(
+        "a" <= char.lower() <= "z" for char in official_name
+    )
+    if official_has_latin:
+        start, end = official_spans[0] if official_spans else (0, 0)
+        if naming_context and developer:
+            status = Status.LIKELY_VIOLATION
+            message = (
+                "Официальное наименование содержит латиницу; в рекламе ДДУ застройщика "
+                "требуется кириллица (214-ФЗ п. 7 ст. 2)."
+            )
+        else:
+            status = Status.NEEDS_REVIEW
+            message = (
+                "Официальное наименование содержит латиницу. Проверьте дату ввода и "
+                "применимость требования 214-ФЗ."
+            )
+        findings.append(
+            _make(
+                "name-official-latin",
+                status,
+                message,
+                start,
+                end,
+                official_name,
+                text_map,
+                legal_basis=_LEGAL_214 if naming_context else (),
+                confidence="high" if naming_context and developer else "medium",
+                details={
+                    "name_source": ctx.name_source,
+                    "position_known": bool(official_spans),
+                },
+            )
+        )
+
+    if name_audit and official_name and not alias_spans and not official_spans:
+        findings.append(
+            _make(
+                "name-not-found",
+                Status.NEEDS_REVIEW,
+                f"Официальное наименование «{official_name}» не найдено в тексте. "
+                "Проверьте, что карточка содержит эталонное название.",
+                0,
+                0,
+                official_name,
+                text_map,
+                confidence="medium",
+                details={"name_source": ctx.name_source},
+            )
+        )
+
+    if (
+        name_audit
+        and official_name
+        and official_spans
+        and not alias_spans
+        and not official_has_latin
+    ):
+        start, end = official_spans[0]
+        findings.append(
+            _make(
+                "name-official-present",
+                Status.NO_ISSUE_FOUND,
+                "В тексте найдено официальное наименование; расхождений по эталону нет.",
+                start,
+                end,
+                text[start:end],
+                text_map,
+                confidence="medium",
+                details={"name_source": ctx.name_source},
             )
         )
 

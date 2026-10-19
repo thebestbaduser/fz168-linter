@@ -38,6 +38,9 @@ class Context:
     commissioned_before: Optional[str] = None
     trademark_status: str = "unknown"
     input_format: str = "text"
+    official_name: Optional[str] = None
+    aliases: Tuple[str, ...] = field(default_factory=tuple)
+    name_source: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.legal_surface not in SURFACES:
@@ -62,6 +65,19 @@ class Context:
         ):
             raise ValueError("entity_roles должен быть списком или кортежем непустых строк")
         self.entity_roles = tuple(self.entity_roles)
+        if self.official_name is not None and (
+            not isinstance(self.official_name, str) or not self.official_name.strip()
+        ):
+            raise ValueError("official_name должен быть непустой строкой или None")
+        if not isinstance(self.aliases, (tuple, list)) or not all(
+            isinstance(alias, str) and alias.strip() for alias in self.aliases
+        ):
+            raise ValueError("aliases должен быть списком или кортежем непустых строк")
+        self.aliases = tuple(self.aliases)
+        if self.name_source is not None and (
+            not isinstance(self.name_source, str) or not self.name_source.strip()
+        ):
+            raise ValueError("name_source должен быть непустой строкой или None")
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Context":
@@ -78,6 +94,9 @@ class Context:
             "commissioned_before": self.commissioned_before,
             "trademark_status": self.trademark_status,
             "input_format": self.input_format,
+            "official_name": self.official_name,
+            "aliases": list(self.aliases),
+            "name_source": self.name_source,
         }
 
 
